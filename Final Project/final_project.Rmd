@@ -28,7 +28,7 @@ cust_adj <- theme(legend.position="top", plot.title = element_text(hjust = 0.5),
 theme_set(theme_classic() + cust_adj)
 ```
 # About the Analysis
-
+*Note: for a link to the video presentation - see [youtube](https://youtu.be/VwF5FkU2e9I)
 The dataset is comprised of various employee information along with whether or not the employee quit (attrition = "yes"). 
 
 The goal of this analysis is to create a prediction model for employee attrition. 
@@ -141,7 +141,7 @@ eda_df2 <- eda_df %>% mutate(job_involv = factor(JobInvolvement, order = TRUE, l
 ggtexttable(head(eda_df2), rows=NULL)
 ```
 ### Model Selection
-In order to account for various uncertainty in my training-test split, I am running 100 random permutations.
+In order to account for various uncertainty in my training-test split, I am running 100 random permutations. *Note: due to the random nature of the permutations, this chart and the metrics may be slightly different at run time (also in the youtube presentation!)*
 ```{r, warning=FALSE, message=FALSE}
 # main loop for benchmarking model performance
 model_check <- function(df, target, k, model_types=c("knn", "nb"), row_progress=TRUE){
