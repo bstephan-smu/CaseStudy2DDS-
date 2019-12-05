@@ -1,0 +1,338 @@
+---
+title: "Exploration in Salary Requirements and Employee Attrition"
+author: "Michael (Branum) Stephan"
+date: "11/25/2019"
+output: html_document
+fig_caption: yes
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(cowplot)
+library(corrplot)
+library(ggthemes)
+library(caret)
+library(skimr)  
+library(reshape2)
+library(dplyr)
+library(stringr)
+library(plotly)
+library(fastDummies)
+library(ggpubr)
+library(readxl)
+
+# defining a global theme for all visualizations
+cust_adj <- theme(legend.position="top", plot.title = element_text(hjust = 0.5),
+  plot.subtitle = element_text(hjust = 0.5), 
+  plot.caption = element_text(hjust = 0.5, face="italic"))
+theme_set(theme_classic() + cust_adj)
+```
+# About the Analysis
+
+The dataset is comprised of various employee information along with whether or not the employee quit (attrition = "yes"). 
+
+The goal of this analysis is to create a prediction model for employee attrition. 
+Because income is one of the major factors, I will additionally create a model to predict employee salary.
+In order to ensure the algorithms can properly process the data, I'm setting text-based (categorical) data as factors and the numerical values as numeric decimals. Additionally, I'm reading in ordinal data as ordered factors with the assumption that various attributes like Environment Satisfaction aren't continuous.
+\n
+```{r, message=FALSE, warning=FALSE}
+
+# read in training data to dataframe
+root_dir <- '/Users/michaelstephan/Desktop/SMU/Doing Data Science/Final Project/'
+attrition_data_loc <- paste(root_dir,'resources/CaseStudy2-data.csv', sep="")
+data <- data.frame(read.csv(attrition_data_loc))
+
+# read in attrition test data to dataframe
+attrition_test_loc <- paste(root_dir, 'resources/CaseStudy2CompSet No Attrition.csv', sep="")
+attrition_test <- data.frame(read.csv(attrition_test_loc))
+
+# read in salary test data to dataframe
+salary_test_loc <- paste(root_dir, 'resources/CaseStudy2CompSet No Salary.xlsx', sep='')
+salary_test <- read_excel(salary_test_loc)
+
+# remove "unnecessary" columns and save to a training/eda dataframe
+drop_cols <- c("ID", "EmployeeCount", "EmployeeNumber", "Over18", "StandardHours")
+eda_df <- data %>% select(-one_of(drop_cols))
+
+# ensure categorical data are factors
+cat_cols <- c("Attrition", "BusinessTravel", "Department", "Education", "EducationField", "EnvironmentSatisfaction", "Gender", "JobInvolvement", "JobLevel",
+              "JobRole", "JobSatisfaction", "MaritalStatus", "OverTime", "PerformanceRating", "RelationshipSatisfaction", "StockOptionLevel", "WorkLifeBalance")
+
+# ensure all proper datatypes are met
+eda_df <- eda_df %>% mutate_each_(funs(factor), cat_cols) %>% mutate_each(funs(as.numeric), -cat_cols)
+```
+# Part 1: Initial Exploratory Data Analysis
+### Numerical vs. Numerical Relationships
+In order to understand relationships between numerical values, I first created a heatmap, colored by correlation among only the numeric features in the data.\n
+Evidence from the correlation plot shows the strongest single correlation between Monthly Income is with Total Working Years (experience). Additionally, there is a strong correlation to Age, Years Since Last Promotion, and Years at Company. However, there is likely some collinearity between these terms as shown by the strong correlation between them. Also, there is some inutuitive evidence that Age and Total Working Years are strongly correlated. *Due to the strength of the correlation between Total Working Years and Monthly Income, I believe it to be the single best numerical predictor for Monthly Income in the dataset*. Due to the factoral nature of Attrition, we are not able to provide any numerical correlation with Attrition.
+```{r, message=FALSE, fig.cap="\\label{fig:figs}Figure 1: Numeric Correlation Plot"}
+# check numeric correlations
+correlator  <-  function(df){
+  df %>%
+    keep(is.numeric) %>%
+    tidyr::drop_na() %>%
+    cor %>%
+    corrplot("upper", addCoef.col = "white", number.digits = 2,
+             number.cex = 0.5, method="square",
+             order="hclust",
+             tl.srt=45, tl.cex = 0.8)
+}
+
+# return correlation matrix of numerical values
+correlator(eda_df)
+```
+### Numerical vs. Attrition
+In order to provide some insight to the relationship between the numerical data and Attrition, I have density plots below, colored by Attrition value. The largest difference bewteen the two attrition groups appears to be from Monthly Income. There are some other, less distinct differences seen between Age, Total Working Years, and Years at Company. However, as evident in the correlation plot above, these numerical features share some collinearity, thus not all are suitable to be used in the same model at once. Because monthly income is the most pronounced difference between attrition groups, it will be preferred over some of the other correlated features for the attrition prediction model. 
+```{r, message=FALSE, fig.width=11,fig.height=20, fig.cap="\\label{fig:figs}Figure 2: Numeric Features vs. Attrition"}
+target <- "Attrition"
+numvars <- eda_df %>% keep(is.numeric) %>% colnames
+
+numplot <- function(df, explan, resp) {
+  ggplot(data = df) + geom_density(aes_string(x = explan, fill = resp), alpha = 0.5)
+}
+
+plotlist <- lapply(numvars, function(x) numplot(eda_df, x, target))
+plot_grid(plotlist=plotlist, ncol = 2, axis = "tblr", align=c("hv"))
+```
+### Categorical vs. Attrition
+In order to find similarities between the categorical data and the Attrition values, I've created some bar charts to show the relative percentage of attrition among each category. Some of the notable differences between attrition and non atrrition are in the Job Involvement, Job Level, Job Role, Work Life Balance, and Overtime Status features. Among these, the most significant values are Overtime, Worklife Balance, and Job Involvement. Additionally, Job Role suggests that salesman are the most common role to leave while research director and manufacturing director are among the rarest to leave. 
+```{r, message=FALSE, fig.width=11,fig.height=20, fig.cap="\\label{fig:figs}Figure 3: Factoral features vs. Attrition"}
+target <- "Attrition"
+
+expls <- eda_df[, !(names(eda_df) %in% c(target))] %>% keep(is.factor) %>% colnames
+
+
+catplot <- function(df, x,y){
+  plot <- ggplot(data = df, aes_string(x = x, fill = y)) + 
+    geom_bar(position = "fill", alpha = 0.9) + 
+    coord_flip()
+  return(plot)
+}
+
+
+plotlist2 <- lapply(expls, function(x) catplot(eda_df, x, target))
+
+plot_grid(plotlist=plotlist2, ncol=2)
+```
+### Feature Engineering
+Because overtime and monthly income are both income related, it may prove beneficial to create an "interaction" between them. First, I'll create a bin of Monthly Income based on the quartiles of the attrition values. Then, I'll concatenate income level and overtime status. Binning alone seemed to have helped further bring insight onto the effect of income vs. attrition, however, the addition of overtime status created a very pronounced class of attrition values. An astounding 75% of the lowest income class with overtime have reportedly left their job, suggesting this as a superior classification for the attrition prediction model.
+```{r fig.width=11, fig.height=4, fig.cap="\\label{fig:figs}Figure 4: Custom Features vs. Attrition"}
+# income class
+b <- c(-Inf, 2500, 3000, 5000, Inf)
+names <- c("Lowest", "Low", "Medium", "High")
+eda_df$income_class = factor(cut(eda_df$MonthlyIncome, breaks = b, labels = names), order=TRUE, levels=c("Lowest", "Low", "Medium", "High"))
+
+# income class with overtime
+eda_df$income_overtime = factor(paste(eda_df$income_class, eda_df$OverTime, sep="_"), order=TRUE, levels=c("Lowest_No", "Lowest_Yes", 'Low_No','Low_Yes', 'Medium_No', 'Medium_Yes','High_No', 'High_Yes'))
+
+# plot new created features
+plotlist3 <- lapply(c("OverTime", "income_class", "income_overtime"), function(x) catplot(eda_df, x, target))
+
+# findings: JobRole - High amount of Sales Reps, JobInvolvement, Overtime, WorkLifeBalance
+plot_grid(plotlist=plotlist3, ncol=3)
+```
+# Part 2: Predicting Employee Attrition
+### Feature Selection
+Utilizing my findings in the EDA section, I'm going to run a permutation loop to compare a KNN model with a Naive Bayes model using the features "income_overtime", "WorkLifeBalance", and JobInvolvement.
+```{r fig.width=11, fig.cap="\\label{fig:figs}Figure 5: Major Attrition Features"}
+# create matrix of results and scale numeric values
+eda_df2 <- eda_df %>% mutate(job_involv = factor(JobInvolvement, order = TRUE, levels=c(1,2,3,4)),
+                             WorkLifeBalance = factor(WorkLifeBalance, order = TRUE, levels=c(1,2,3,4))) %>% mutate_if(is.numeric, scale) %>% select(Attrition, WorkLifeBalance, income_overtime, job_involv)
+ggtexttable(head(eda_df2), rows=NULL)
+```
+### Model Selection
+In order to account for various uncertainty in my training-test split, I am running 100 random permutations.
+```{r, warning=FALSE, message=FALSE}
+# main loop for benchmarking model performance
+model_check <- function(df, target, k, model_types=c("knn", "nb"), row_progress=TRUE){
+m = matrix(nrow = k*length(model_types), ncol = 5)
+x=1  # row counter
+# loop through each run
+for(i in 1:k){
+  
+  # create a random permutation of train-test split
+  indxTrain <- createDataPartition(y = df[,target],p = 0.70,list = FALSE)
+  training_df <- df[indxTrain,]
+  testing_df <- df[-indxTrain,]
+  
+  # build predictive model based on new permutation 
+  for (model_type in model_types){
+    if(row_progress == TRUE){
+    print(sprintf("Run Number: %s Model Type: %s X-value: %s", i, model_type, x))
+    }
+    model <- train(as.formula(paste(target, "~ .")), data = training_df, metric = "spec", method = model_type)
+    # make predictions based on model
+    Predict <- predict(model, newdata=testing_df[, !(names(testing_df) %in% c(target))])
+    
+    # assign test statistics to a matrix
+    results = confusionMatrix(table(testing_df[,target], Predict))
+    m[x, 1] = i
+    m[x, 2] = model_type
+    m[x, 3] = results$overall[1]
+    m[x, 4] = results$byClass[1]
+    m[x, 5] = results$byClass[2]
+      x = x + 1
+  }
+  }
+  colnames(m) = c("run_number", "model_type", "Accuracy", "Sensitivity", "Specificity")
+  m <- as.data.frame(m)
+  return(m)
+}
+
+# run model for 100 loops
+k=100
+evaluate <- model_check(eda_df2, "Attrition", k, row_progress = FALSE)
+```
+In order to perform some comparison between the models, I need to ensure that accuracy, sensitivity, and specificity are numeric values. Additionally, I will add a metric to test the occurrence of a value below of 0.6 benchmark required for the project.
+```{r fig.width=11, fig.cap="\\label{fig:figs}Figure 6: Sample of Accuracy Benchmark"}
+# adding benchmark criteria and ensuring datatypes are met
+evaluate$Accuracy <- as.numeric(as.character(evaluate$Accuracy))
+evaluate$Sensitivity <- as.numeric(as.character(evaluate$Sensitivity))
+evaluate$Specificity <- as.numeric(as.character(evaluate$Specificity))
+
+evaluate$Accuracy_benchmark <- ifelse(evaluate$Accuracy < 0.6, 1, 0)
+evaluate$Sensitivity_benchmark <- ifelse(evaluate$Sensitivity < 0.6, 1, 0)
+evaluate$Specificity_benchmark <- ifelse(evaluate$Specificity < 0.6, 1, 0)
+ggtexttable(head(evaluate), rows=NULL)
+```
+Now that I have the results in a suitable structure for analytics, I will summarise the data to find the averages of each tuning parameter in addition to the number of times each tuning parameter violated the 0.6 threshold.
+```{r fig.width=11, fig.cap="\\label{fig:figs}Figure 7: Summary of Benchmarks by Model Type"}
+summary_df <- evaluate %>% group_by(model_type) %>% summarise(mean(Accuracy), Accuracy_violations=sum(Accuracy_benchmark), mean(Sensitivity), Sensitivity_violations=sum(Sensitivity_benchmark), mean(Specificity), Specificity_violations=sum(Specificity_benchmark))
+
+ggtexttable(head(summary_df), rows=NULL)
+```
+You can see from the summary that the average performance between the two models is arguably close. However, the amount of Specificity violations has appeared to be higher for the Naive Bayes model, hence the suggested model forward with be using KNN. In order to get a visual representation of the "spread" of data, I will create a plot to show all runs, broken down by tuning parameter and model type.
+```{r, fig.width=11, fig.height=8, fig.cap="\\label{fig:figs}Figure 8: Graphical Analysis of Benchmark by Model Type"}
+# restructure for plot
+results_melt <- melt(evaluate, id.vars=c("run_number", "model_type"), measure.vars=c("Accuracy", "Sensitivity","Specificity"))
+# plot accuracy, sensivity, specificity for each run
+results_melt %>% ggplot(aes(x=as.numeric(run_number), y=as.numeric(value))) + geom_point(aes(color = variable, alpha=0.5)) + facet_grid(rows = vars(model_type)) +
+  geom_hline(yintercept=0.6, linetype="dashed", color="red", size=1.25) + geom_text(aes(0,0.6,label = "Minimum Target Score", hjust=-1, vjust = 2)) + 
+  ylim(0,1) + labs(title="Evaluating Model Performance",subtitle = "Accuracy, Sensitivity, and Specificity over 100 iterations",caption="Figure 2", x = "Run Number", y="Score", color="Benchmark Measure:") + guides(alpha=FALSE) 
+```
+### Model Prediction
+Now that I have chosen my preferred model, I will use it to predict attrition among the test set values. The first step will be preparation of the test set to create a similar format to the original training data.
+```{r}
+# prepare the test data to match the training set
+# income class
+b <- c(-Inf, 2500, 3000, 5000, Inf)
+names <- c("Lowest", "Low", "Medium", "High")
+
+# create dataframe in
+attrition_test_in <- attrition_test
+attrition_test_in$income_class = factor(cut(attrition_test$MonthlyIncome, breaks = b, labels = names), order=TRUE, levels=c("Lowest", "Low", "Medium", "High"))
+
+# income class with overtime
+attrition_test_in$income_overtime = factor(paste(attrition_test_in$income_class, attrition_test_in$OverTime, sep="_"), order=TRUE, levels=c("Lowest_No", "Lowest_Yes", 'Low_No','Low_Yes', 'Medium_No', 'Medium_Yes','High_No', 'High_Yes'))
+
+# select features and ensure factors
+attrition_test_in <- attrition_test_in %>% mutate(job_involv = factor(JobInvolvement, order = TRUE, levels=c(1,2,3,4)),WorkLifeBalance = factor(WorkLifeBalance, order = TRUE, levels=c(1,2,3,4))) %>% mutate_if(is.numeric, scale) %>% select(WorkLifeBalance, income_overtime, job_involv)
+
+head(attrition_test_in)
+```
+Next, I will run the formatted test set though the model.
+
+```{r}
+# create model based on all attrition data and features
+model <- train(Attrition ~ ., data = eda_df2, metric = "spec", method = "knn")
+
+# make predictions on test set based on model
+Predict <- predict(model, newdata=attrition_test_in)
+
+# create a new dataframe with predictions
+attrition_test_output <- attrition_test_in
+attrition_test_output$Attrition_Predictions <- Predict
+attrition_test_output$ID <- attrition_test$ID
+
+# select only desired column output
+attrition_test_output <- attrition_test_output %>% select(ID, Attrition_Predictions)
+head(attrition_test_output)
+write_csv(attrition_test_output, paste(root_dir,"resources/Case2PredictionsStephan Attrition.csv",sep=""))
+```
+
+# Part 3: Modeling Employee Pay
+Based on the correlation plot, there is extremly strong evidence that Total Working Years (experience) is the largest factor in Monthly Income among employees in the dataset. Additionally, trial and error of different categorical variables on the regression plot has shown additional influence by Job Level and Management Status. I will first make a plot to visualize the relationship between them.
+```{r fig.width=11, warning=FALSE, fig.height=6, fig.cap="\\label{fig:figs}Figure 9: Regression Parameters vs. Monthly Income"}
+# find regression line based on most strongly correlated parameter - total working years
+# create a basic linear regression model for Monthly Income and Total Working Years
+experience_model <- lm(MonthlyIncome ~ TotalWorkingYears, data=eda_df)
+salary_plot <- cbind(eda_df, predict(experience_model, interval="prediction")) %>% 
+  mutate(management = case_when(str_detect(JobRole, "Manager") | str_detect(JobRole, "Director") ~ "Manager", TRUE ~"Not Management")) %>% 
+  ggplot(aes(x=TotalWorkingYears, y=MonthlyIncome)) + 
+  geom_point(aes(color=JobLevel, shape=management, size=0.6, alpha=0.95)) + 
+  scale_shape_manual(values = c(19, 1)) + geom_smooth(method="lm", color='black') + 
+  geom_line(aes(y=lwr), color = "red", linetype = "dashed")+
+  geom_line(aes(y=upr), color = "red", linetype = "dashed")+
+  labs(title="Monthly Income vs. Total Working Years",subtitle = "Colored by Job Level, Filled by Management Status",caption="Figure 3", x = "Total Working Years", y="Monthly Income [$]", color="Job Level:", shape="Management Status:") + theme(legend.position="top")+guides(size=FALSE, alpha=FALSE)
+
+salary_plot
+```
+Given the visual evidence above, I'll select only the columns that I'm interested in.
+```{r fig.width=11, fig.cap="\\label{fig:figs}Figure 10: Sample of Regression Training Set"}
+# create dataframe from conclusion in the plotted model
+income_df <- eda_df %>% mutate(management = case_when(str_detect(JobRole, "Manager") | str_detect(JobRole, "Director") ~ "Manager", TRUE ~"Not Management")) %>% dummy_cols(select_columns=c("JobLevel", "management"), remove_first_dummy = TRUE) %>% select(MonthlyIncome,  TotalWorkingYears, JobLevel_2, JobLevel_3, JobLevel_4, JobLevel_5, management_Manager)
+
+ggtexttable(head(income_df), rows=NULL)
+```
+Based on these parameters, I build a multiple regression model with root mean square error (RMSE) well within the threshold of $3000. The euqation is then:
+Salary = 2522.87 + [(37.15) * (Total Working Years)] + [2415.69 * (Job Level 2 [Y/N])] + [6287.51 * (Job Level 3 [Y/N])] + [10811.09 * (Job Level 4 [Y/N])] + [14453.59 * (Job Level 5 [Y/N])] + [1271.69 * (Management [Y/N])]
+```{r}
+# create regression model to predict salary based on model
+salary_model = train(MonthlyIncome~., data = income_df, method = "lm")
+summary(salary_model)
+```
+I will now restructure the test data for prediction.
+```{r}
+# restructure to fit regression model
+salary_test_in <- salary_test %>% mutate(management = case_when(str_detect(JobRole, "Manager") | str_detect(JobRole, "Director") ~ "Manager", TRUE ~"Not Management")) %>% dummy_cols(select_columns=c("JobLevel", "management")) %>% select(TotalWorkingYears, JobLevel_2, JobLevel_3, JobLevel_4, JobLevel_5, management_Manager)
+
+head(salary_test_in)
+```
+Lastly, I will predict salary on the test set using the linear model.
+```{r}
+# create model based on all attrition data and features
+salary_model = train(MonthlyIncome~., data = income_df, method = "lm")
+
+# make predictions on test set based on model
+salary_predict <- predict(salary_model, newdata=salary_test_in)
+salary_test_out <- salary_test_in
+salary_test_out$salary_predictions <- salary_predict
+salary_test_out$ID <- salary_test$ID
+
+# writing output to file
+salary_test_out <- salary_test_out %>% select(ID, salary_predictions)
+write.csv(salary_test_out, paste(root_dir, "resources/Case2PredictionsStephan Salary.csv", sep=""))
+head(salary_test_out)
+```
+
+# Part 4: Role Specific Exploration
+While performing initial exploratory analysis, I noticed that the sales representatives tend to have the highest relative attrition rates compared to any other position. Upon investigation, I noticed that the median monthly income for these individuals is much lower than other roles. Additionally, the progression of pay with experience appears to be virtually non-existent. It's possible that this is due to high commision that the salesman earn, but it's also possible that the lower monthly pay of the salesman is leading to high turnover in the role.
+```{r}
+# plot of attrition per job role
+# plot of income class per job role
+catplot(eda_df, eda_df$JobRole, "Attrition") + labs(title='Attrition Distribution', subtitle = 'Breakdown by Job Role', x='Job Role', y='Relative Frequency', fill='Attrition')
+
+# plot of income class per job role
+catplot(eda_df, eda_df$JobRole, "income_class") + facet_grid(rows="Attrition") + labs(title='Income Class Distribution', subtitle = 'Breakdown by Job Role, Trellised by Attrition [Y/N]', x='Job Role', y='Relative Frequency', fill='Income Class')
+
+# plot of mean pay per job role
+eda_df %>% group_by(JobRole) %>% summarise(median_pay = median(MonthlyIncome)) %>% ggplot() + geom_bar(aes(x=reorder(JobRole, median_pay), y=median_pay, fill=JobRole), stat="identity") + labs(title='Median Monthly Income per Job Role', x = 'Job Role', y='Median Monthly Income') + guides(fill=FALSE) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# plot of income progression sales vs. non sales
+eda_df %>% mutate(sales_rep=ifelse(JobRole == "Sales Representative", "Sales Rep", "Other")) %>% arrange(sales_rep) %>% ggplot() + geom_point(aes(x=TotalWorkingYears, y=MonthlyIncome, colour=sales_rep, alpha=sales_rep)) + scale_alpha_discrete(range=c(0.3, 1)) + scale_colour_manual(values=c("grey", "red"))+ labs(title="Monthly Income Progression", subtitle = "Sales Rep vs. Others", x="Total Working Years", y="Monthly Income", colour='Position') + guides(alpha=FALSE)
+```
+# Conclusion
+
+### Attrition Prediction Model
+According to the a combination of "trial and error", along with correlation and density analysis, I was able to create a KNN model boasting an average accuracy of `r round(summary_df %>% filter(model_type == "knn") %>% select('mean(Accuracy)'), 2)`, average specificity of `r round(summary_df %>% filter(model_type == "knn") %>% select('mean(Specificity)'), 2)`, and an average sensitivity of `r round(summary_df %>% filter(model_type == "knn") %>% select('mean(Sensitivity)'), 2)` on `r k` random permutations.Based on the features chosen in the model, it appears that **the three most influencial characterisitics of an employee who quits are a monthly income less than $2,500 with overtime status, poor work life balance, and low work involvement.**
+
+### Salary Prediction Model
+The features that contribute to most significantly to the prediction of the monthly income of an employee can most be credited to total experience (total working years), job level, and management status. Due to factoral features, these have been "dummy coded" to produce the following multiple regression model:
+
+#### Model:
+Salary = (2522.87 + 37.14 * (Total Working Years)) + (2415.68 * (Job Level 2 [Y/N])) + (6287.50 * (Job Level 3 [Y/N])) + (10811.08 * (Job Level 4 [Y/N])) + (14453.59 * (Job Level 5 [Y/N])) + (1271.69 * (Management Status [Y/N]))
+
+#### Analysis:
+Assuming all factors as zero, the minimum monthly income is $2522.87. For every increase in one year of experience, there is an increase of $37.14 in monthly income. All else held constant, an increase from job level 1 to job level 2 results in a $2415.68 increase in monthly income. An increase from job level 1 to 3 results in an increase of $6287.50 in monthly income. An increase from job level 1 to 4 results in an increase of $10811.08 monthly income. Lastly, an increase from job level 1 to level 5 results in an increase of $14453.59 in monthly income. Within each job level, having a "manager" or "director" title adds an additional $1271.69 in monthly income in comparison to non-management, all else held constant.
+
+
